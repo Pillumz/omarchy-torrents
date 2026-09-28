@@ -48,13 +48,13 @@ def ensure_config_dir():
 
 KINDS = ("transmission", "qbittorrent", "deluge")
 
-# Passwords never touch config.toml. They live only in the desktop's Secret
-# Service -- GNOME Keyring by default on Omarchy (gnome-keyring-daemon,
-# unlocked via PAM at login; KWallet works too) -- accessed via secret-tool
-# and keyed by client id. There is no plaintext fallback: if the keyring
-# can't take a password (missing secret-tool, locked, timeout, ...),
-# save_clients() raises CredentialStorageError and the save is aborted
-# rather than writing the password to disk.
+# Passwords and qBittorrent API keys never touch config.toml. They live only
+# in the desktop's Secret Service -- GNOME Keyring by default on Omarchy
+# (gnome-keyring-daemon, unlocked via PAM at login; KWallet works too) --
+# accessed via secret-tool and keyed by client id. There is no plaintext
+# fallback: if the keyring can't take a secret (missing secret-tool, locked,
+# timeout, ...), save_clients() raises CredentialStorageError and the save is
+# aborted rather than writing it to disk.
 SECRET_SERVICE = "omarchy-torrents"
 
 STRING_FIELDS = ("id", "name", "kind", "host", "path", "username")
@@ -108,6 +108,16 @@ def secret_clear(client_id):
         )
     except (OSError, subprocess.TimeoutExpired):
         pass
+
+
+# qBittorrent API keys are a second, independent secret a client can have
+# alongside (or instead of) a password. Rather than widen the Secret Service
+# attribute schema (which would stop matching every password already stored
+# under the plain client id), they're kept in the same client_id/password
+# schema under a suffixed id. slugify() only ever produces
+# [a-z0-9-]+ ids, so this suffix can never collide with a real client id.
+def _api_key_secret_id(client_id):
+    return f"{client_id}__apikey"
 
 
 class BackendError(Exception):
@@ -210,6 +220,7 @@ def load_clients():
             "path": str(entry.get("path", "")),
             "username": str(entry.get("username", "")),
             "password": secret_lookup(client_id),
+            "api_key": secret_lookup(_api_key_secret_id(client_id)),
             "ssl": bool(entry.get("ssl", False)),
         })
     return clients
@@ -230,6 +241,7 @@ def save_clients(clients, keyring_id=None):
     lines = []
     for c in clients:
         password = c.get("password", "")
+        api_key = c.get("api_key", "")
         if c["id"] == keyring_id:
             if password:
                 label = f"Omarchy Torrents: {c.get('name') or c.get('id')}"
@@ -243,6 +255,19 @@ def save_clients(clients, keyring_id=None):
                     )
             elif keyring_available():
                 secret_clear(c["id"])
+
+            if api_key:
+                label = f"Omarchy Torrents: {c.get('name') or c.get('id')} (API key)"
+                if not secret_store(_api_key_secret_id(c["id"]), label, api_key):
+                    raise CredentialStorageError(
+                        "Secure credential storage is unavailable.\n"
+                        "Secret-tool is missing, the keyring is locked, or the "
+                        "request timed out or failed.\n"
+                        "The API key was not saved. Unlock or start your keyring "
+                        "and try again."
+                    )
+            elif keyring_available():
+                secret_clear(_api_key_secret_id(c["id"]))
 
         lines.append("[[clients]]")
         for key in STRING_FIELDS:
@@ -507,12 +532,33 @@ class QbittorrentBackend(Backend):
 
     def __init__(self, client):
         super().__init__(client)
+        # qBittorrent's CSRF/host-header check rejects Origin/Referer as
+        # cross-origin whenever they don't match the request's Host exactly.
+        # Behind a reverse proxy on the scheme's default port, the proxy
+        # forwards Host *without* that port (as a browser's own Origin/Referer
+        # would omit it too), so Backend.__init__'s {host}:{port} base -- which
+        # always keeps the port -- makes every request look cross-origin.
+        # Rebuild base the way a browser would: default port omitted, any
+        # other port preserved exactly. This also becomes the request URL
+        # (unaffected either way, since omitting a default port just means
+        # "connect to it implicitly").
+        scheme = "https" if client.get("ssl") else "http"
+        default_port = 443 if scheme == "https" else 80
+        port = int(client.get("port") or 0)
+        netloc = client["host"] if port == default_port else f"{client['host']}:{port}"
+        self.base = f"{scheme}://{netloc}"
         self._cookie = None
 
     def _headers(self, extra=None):
-        headers = {"Referer": self.base, "Origin": self.base}
-        if self._cookie:
-            headers["Cookie"] = self._cookie
+        # An API key is sent as a bearer token and needs neither a session
+        # cookie nor the Origin/Referer pair used to satisfy the CSRF check
+        # that only applies to cookie-based auth.
+        if self.client.get("api_key"):
+            headers = {"Authorization": f"Bearer {self.client['api_key']}"}
+        else:
+            headers = {"Referer": self.base, "Origin": self.base}
+            if self._cookie:
+                headers["Cookie"] = self._cookie
         if extra:
             headers.update(extra)
         return headers
@@ -543,12 +589,17 @@ class QbittorrentBackend(Backend):
         self._cookie = match.group(0)
 
     def _raw_request(self, path, method="GET", data=None, extra_headers=None, retried=False):
-        if not self._cookie:
+        # An API key needs no login/session at all -- it can't even call
+        # auth/login. A 401/403 with a key means the key itself is bad or
+        # revoked, so retrying (which would otherwise re-login on a fresh
+        # cookie) would just repeat the same failure forever.
+        using_api_key = bool(self.client.get("api_key"))
+        if not using_api_key and not self._cookie:
             self._login()
         status, headers, body = http_request(
             self.base + path, method, data, self._headers(extra_headers),
         )
-        if status in (401, 403) and not retried:
+        if status in (401, 403) and not retried and not using_api_key:
             self._cookie = None
             return self._raw_request(path, method, data, extra_headers, retried=True)
         return status, body
@@ -801,10 +852,10 @@ def cmd_clients(args):
     return 0
 
 
-def read_password_stdin():
+def read_stdin_line():
     line = sys.stdin.readline()
     # readline() keeps the trailing newline the caller always writes; a
-    # password containing a literal newline still isn't representable over
+    # secret containing a literal newline still isn't representable over
     # this channel, matching the old argv-based behavior which couldn't
     # carry one either.
     if line.endswith("\n"):
@@ -812,7 +863,16 @@ def read_password_stdin():
     return line
 
 
-def client_args_to_dict(args, password):
+def read_secret_stdin_pair():
+    # The caller (Service.qml) always writes exactly two lines -- password,
+    # then API key -- even when one or both are unchanged/blank, so this
+    # always reads both in that fixed order regardless of which --*-stdin
+    # flags are set below; a flag only decides whether its line replaces the
+    # stored value or is discarded in favor of "keep existing".
+    return read_stdin_line(), read_stdin_line()
+
+
+def client_args_to_dict(args, password, api_key):
     return {
         "name": args.name or "",
         "kind": args.kind,
@@ -821,28 +881,33 @@ def client_args_to_dict(args, password):
         "path": args.path or "",
         "username": args.username or "",
         "password": password if password is not None else "",
+        "api_key": api_key if api_key is not None else "",
         "ssl": bool(args.ssl),
     }
 
 
 def cmd_probe(args):
-    password = read_password_stdin() if args.password_stdin else None
+    password_line, api_key_line = read_secret_stdin_pair()
+    password = password_line if args.password_stdin else None
+    api_key = api_key_line if args.api_key_stdin else None
     if args.id:
         clients = load_clients()
         existing = find_client(clients, args.id)
         if not existing:
             return fail(f"No client with id {args.id}")
         # Start from the saved record (this is the only place the real
-        # password lives) and layer the form's current field values on top,
-        # so testing mid-edit reflects unsaved changes. A blank/omitted
-        # password means "keep testing with what's already stored" rather
-        # than testing with no credentials at all.
+        # password/API key lives) and layer the form's current field values
+        # on top, so testing mid-edit reflects unsaved changes. A blank/
+        # omitted secret means "keep testing with what's already stored"
+        # rather than testing with no credentials at all.
         client = dict(existing)
-        client.update(client_args_to_dict(args, password))
+        client.update(client_args_to_dict(args, password, api_key))
         if not password:
             client["password"] = existing.get("password", "")
+        if not api_key:
+            client["api_key"] = existing.get("api_key", "")
     else:
-        client = client_args_to_dict(args, password)
+        client = client_args_to_dict(args, password, api_key)
         client["id"] = "__probe__"
     try:
         backend = make_backend(client)
@@ -855,16 +920,21 @@ def cmd_probe(args):
 
 def cmd_add_client(args):
     clients = load_clients()
-    password = read_password_stdin() if args.password_stdin else None
-    new_fields = client_args_to_dict(args, password)
+    password_line, api_key_line = read_secret_stdin_pair()
+    password = password_line if args.password_stdin else None
+    api_key = api_key_line if args.api_key_stdin else None
+    new_fields = client_args_to_dict(args, password, api_key)
 
     if args.id:
         existing = find_client(clients, args.id)
         if not existing:
             return fail(f"No client with id {args.id}")
-        # Keep the stored password when the caller didn't supply a new one.
+        # Keep the stored password/API key when the caller didn't supply a
+        # new one.
         if password is None:
             new_fields["password"] = existing.get("password", "")
+        if api_key is None:
+            new_fields["api_key"] = existing.get("api_key", "")
         existing.update(new_fields)
         changed_id = args.id
     else:
@@ -887,6 +957,7 @@ def cmd_remove_client(args):
     if len(remaining) == len(clients):
         return fail(f"No client with id {args.id}")
     secret_clear(args.id)
+    secret_clear(_api_key_secret_id(args.id))
     save_clients(remaining)
     out({"ok": True, "clients": [public_client(c) for c in remaining]})
     return 0
@@ -996,12 +1067,16 @@ def parse_args():
         p.add_argument("--port", type=int)
         p.add_argument("--path", default="")
         p.add_argument("--username", default="")
-        # The password itself never goes on argv -- any local process can
-        # read another process's command line (e.g. /proc/<pid>/cmdline),
-        # so it goes over stdin instead. This flag means "read exactly one
-        # line from stdin as the password"; its absence (editing with an
-        # untouched password field) means "no password change".
+        # The password/API key itself never goes on argv -- any local
+        # process can read another process's command line (e.g.
+        # /proc/<pid>/cmdline), so they go over stdin instead. These flags
+        # mean "read this line from stdin as the new value"; their absence
+        # (editing with an untouched field) means "no change". See
+        # read_secret_stdin_pair() for the fixed two-line order this relies on.
         p.add_argument("--password-stdin", action="store_true")
+        # qBittorrent-only (>= 5.2.0): sent as "Authorization: Bearer <key>"
+        # instead of a username/password login. Ignored by other backends.
+        p.add_argument("--api-key-stdin", action="store_true")
         p.add_argument("--ssl", action="store_true")
 
     p_probe = sub.add_parser("probe")

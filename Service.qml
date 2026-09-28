@@ -215,7 +215,7 @@ Item {
     setAltSpeedEnabled(!altSpeedEnabled)
   }
 
-  // fields: {name, kind, host, port, path, username, password, ssl}. existingId set = update.
+  // fields: {name, kind, host, port, path, username, password, apiKey, ssl}. existingId set = update.
   function saveClient(fields, existingId) {
     if (busyOp !== "") return
     busyOp = "save-client"
@@ -227,15 +227,17 @@ Item {
                 "--path", fields.path || "", "--username", fields.username || ""]
     if (existingId) args = args.concat(["--id", existingId])
     if (fields.ssl) args.push("--ssl")
-    // Editing with a blank password field means "keep the saved password"
-    // (that's what the form's placeholder promises) -- only send a password
-    // when adding a new client or when the user actually typed one in. The
-    // password itself goes over stdin (see saveClientProc's onStarted),
-    // never argv, so it's never visible in another local process's view of
-    // this process's command line (e.g. /proc/<pid>/cmdline).
+    // Editing with a blank password/API key field means "keep what's saved"
+    // (that's what the form's placeholder promises) -- only send one when
+    // adding a new client or when the user actually typed one in. Both go
+    // over stdin (see saveClientProc's onStarted), never argv, so neither is
+    // ever visible in another local process's view of this process's
+    // command line (e.g. /proc/<pid>/cmdline).
     var sendPassword = !existingId || (fields.password !== undefined && fields.password !== null && fields.password !== "")
+    var sendApiKey = !existingId || (fields.apiKey !== undefined && fields.apiKey !== null && fields.apiKey !== "")
     if (sendPassword) args.push("--password-stdin")
-    saveClientProc.pendingStdin = fields.password || ""
+    if (sendApiKey) args.push("--api-key-stdin")
+    saveClientProc.pendingStdin = (fields.password || "") + "\n" + (fields.apiKey || "")
     saveClientProc.command = ["python3", root.helperPath].concat(args)
     saveClientProc.startedAt = Date.now()
     saveClientProc.running = true
@@ -250,19 +252,19 @@ Item {
   }
 
   // fields as above, no id (ad-hoc test before saving).
-  // existingId: pass the client being edited so a blank password field
-  // tests against the already-saved password instead of no credentials.
-  // The password goes over stdin (see probeProc's onStarted), never argv --
-  // see saveClient() above for why.
+  // existingId: pass the client being edited so a blank password/API key
+  // field tests against the already-saved value instead of no credentials.
+  // Both go over stdin (see probeProc's onStarted), never argv -- see
+  // saveClient() above for why.
   function probeConnection(fields, existingId) {
     probeResult = null
     probing = true
     var args = ["probe", "--kind", fields.kind, "--host", fields.host, "--port", String(fields.port),
                 "--path", fields.path || "", "--username", fields.username || "",
-                "--password-stdin"]
+                "--password-stdin", "--api-key-stdin"]
     if (fields.ssl) args.push("--ssl")
     if (existingId) args = args.concat(["--id", existingId])
-    probeProc.pendingStdin = fields.password || ""
+    probeProc.pendingStdin = (fields.password || "") + "\n" + (fields.apiKey || "")
     probeProc.command = ["python3", root.helperPath].concat(args)
     probeProc.startedAt = Date.now()
     probeProc.running = true

@@ -12,6 +12,8 @@ multiple torrent clients — Transmission, qBittorrent, and Deluge.
 - Add torrents by magnet link or by uploading a `.torrent` file.
 - Pause, resume, and remove torrents.
 - Toggle each client's alternative ("turtle") speed limits from the panel.
+- qBittorrent 5.2.0+: connect with an API key instead of the WebUI password
+  (Options → WebUI → Authentication → API Key in qBittorrent itself).
 
 ## Installation
 

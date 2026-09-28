@@ -59,6 +59,7 @@ Panel {
   property string formPath: ""
   property string formUsername: ""
   property string formPassword: ""
+  property string formApiKey: ""
   property bool formSsl: false
   property string magnetInput: ""
 
@@ -85,6 +86,7 @@ Panel {
     formPath = ""
     formUsername = ""
     formPassword = ""
+    formApiKey = ""
     formSsl = false
     torrents.probeResult = null
     torrents.clientFormError = ""
@@ -101,6 +103,7 @@ Panel {
     formPath = c.path || ""
     formUsername = c.username || ""
     formPassword = ""
+    formApiKey = ""
     formSsl = !!c.ssl
     torrents.probeResult = null
     torrents.clientFormError = ""
@@ -124,6 +127,7 @@ Panel {
       path: formPath.trim(),
       username: formUsername.trim(),
       password: formPassword,
+      apiKey: formApiKey,
       ssl: formSsl
     }
   }
@@ -642,6 +646,22 @@ Panel {
                 placeholderText: (root.editingClient && root.editingClient.id) ? "Leave blank to keep saved password" : ""
                 text: root.formPassword
                 onTextEdited: root.formPassword = text
+              }
+
+              // qBittorrent >= 5.2.0 only: an API key replaces the
+              // username/password login entirely (sent as a bearer token),
+              // so it's offered only for that client type. Setting one here
+              // does not clear a saved password -- either can still be used
+              // to Test/Save, but the qBittorrent backend prefers the key
+              // whenever it's present.
+              LabeledField {
+                visible: root.formKind === "qbittorrent"
+                width: parent.width
+                label: "API key (optional, replaces password)"
+                password: true
+                placeholderText: (root.editingClient && root.editingClient.id) ? "Leave blank to keep saved API key" : "qbt_…"
+                text: root.formApiKey
+                onTextEdited: root.formApiKey = text
               }
 
               Toggle {

@@ -402,6 +402,7 @@ Panel {
               visible: torrents.actionMessage !== ""
               width: parent.width
               text: torrents.actionMessage
+              textFormat: Text.PlainText
               color: root.urgentColor
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -422,6 +423,7 @@ Panel {
               visible: !!torrents.selectedClient && torrents.lastError !== ""
               width: parent.width
               text: torrents.lastError
+              textFormat: Text.PlainText
               color: root.urgentColor
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -681,6 +683,7 @@ Panel {
                     ? ("Connected — " + torrents.probeResult.torrentCount + " torrent(s) found")
                     : ("Connection failed: " + torrents.probeResult.error))
                   : ""
+                textFormat: Text.PlainText
                 color: torrents.probeResult && torrents.probeResult.ok ? root.foreground : root.urgentColor
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -696,6 +699,7 @@ Panel {
                 visible: torrents.clientFormError !== "" && !torrents.credentialStorageBlocked
                 width: parent.width
                 text: torrents.clientFormError
+                textFormat: Text.PlainText
                 color: root.urgentColor
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
@@ -789,6 +793,7 @@ Panel {
             Text {
               width: parent.width
               text: torrents.clientFormError
+              textFormat: Text.PlainText
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -877,6 +882,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: row.torrent ? row.torrent.name : ""
+          textFormat: Text.PlainText
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -955,6 +961,7 @@ Panel {
         visible: row.torrent && row.torrent.error !== ""
         width: parent.width
         text: row.torrent ? row.torrent.error : ""
+        textFormat: Text.PlainText
         color: root.urgentColor
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
@@ -982,6 +989,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: clientRow.client ? clientRow.client.name : ""
+          textFormat: Text.PlainText
           color: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
@@ -994,6 +1002,7 @@ Panel {
             var c = clientRow.client
             return c ? (Model.kindLabel(c.kind) + " · " + c.host + ":" + c.port) : ""
           }
+          textFormat: Text.PlainText
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.caption
